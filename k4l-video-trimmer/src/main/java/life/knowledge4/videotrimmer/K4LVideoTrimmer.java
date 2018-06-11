@@ -55,6 +55,7 @@ import life.knowledge4.videotrimmer.interfaces.OnProgressVideoListener;
 import life.knowledge4.videotrimmer.interfaces.OnRangeSeekBarListener;
 import life.knowledge4.videotrimmer.interfaces.OnTrimVideoListener;
 import life.knowledge4.videotrimmer.utils.BackgroundExecutor;
+import life.knowledge4.videotrimmer.utils.PathToContentURI;
 import life.knowledge4.videotrimmer.utils.TrimVideoUtils;
 import life.knowledge4.videotrimmer.utils.UiThreadExecutor;
 import life.knowledge4.videotrimmer.view.ProgressBarView;
@@ -99,6 +100,11 @@ public class K4LVideoTrimmer extends FrameLayout {
     private long mOriginSizeFile;
     private boolean mResetSeekBar = true;
     private final MessageHandler mMessageHandler = new MessageHandler(this);
+
+    public K4LVideoTrimmer(@NonNull Context context) {
+        super(context);
+        init(context);
+    }
 
     public K4LVideoTrimmer(@NonNull Context context, AttributeSet attrs) {
         this(context, attrs, 0);
@@ -270,7 +276,6 @@ public class K4LVideoTrimmer extends FrameLayout {
             mediaMetadataRetriever.setDataSource(getContext(), mSrc);
             long METADATA_KEY_DURATION = Long.parseLong(mediaMetadataRetriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION));
 
-            final File file = new File(mSrc.getPath());
 
             if (mTimeVideo < MIN_TIME_FRAME) {
 
@@ -285,12 +290,13 @@ public class K4LVideoTrimmer extends FrameLayout {
             if (mOnTrimVideoListener != null)
                 mOnTrimVideoListener.onTrimStarted();
 
+            final File file = new File(PathToContentURI.getPathFromUri(getContext(), mSrc));
             BackgroundExecutor.execute(
                     new BackgroundExecutor.Task("", 0L, "") {
                         @Override
                         public void execute() {
                             try {
-                                TrimVideoUtils.startTrim(file, getDestinationPath(), mStartPosition, mEndPosition, mOnTrimVideoListener);
+                                TrimVideoUtils.startTrim(getContext(), file, getDestinationPath(), mStartPosition, mEndPosition, mOnTrimVideoListener);
                             } catch (final Throwable e) {
                                 Thread.getDefaultUncaughtExceptionHandler().uncaughtException(Thread.currentThread(), e);
                             }

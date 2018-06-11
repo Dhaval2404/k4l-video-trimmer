@@ -23,29 +23,20 @@
  */
 package life.knowledge4.videotrimmer.utils;
 
+import android.content.Context;
 import android.net.Uri;
 import android.support.annotation.NonNull;
 import android.util.Log;
 
-import com.coremedia.iso.boxes.Container;
-import com.googlecode.mp4parser.FileDataSourceViaHeapImpl;
-import com.googlecode.mp4parser.authoring.Movie;
-import com.googlecode.mp4parser.authoring.Track;
-import com.googlecode.mp4parser.authoring.builder.DefaultMp4Builder;
-import com.googlecode.mp4parser.authoring.container.mp4.MovieCreator;
-import com.googlecode.mp4parser.authoring.tracks.AppendTrack;
-import com.googlecode.mp4parser.authoring.tracks.CroppedTrack;
+import com.github.hiteshsondhi88.libffmpeg.ExecuteBinaryResponseHandler;
+import com.github.hiteshsondhi88.libffmpeg.FFmpeg;
+import com.github.hiteshsondhi88.libffmpeg.exceptions.FFmpegCommandAlreadyRunningException;
 
 import java.io.File;
-import java.io.FileOutputStream;
 import java.io.IOException;
-import java.nio.channels.FileChannel;
 import java.text.SimpleDateFormat;
-import java.util.Arrays;
 import java.util.Date;
 import java.util.Formatter;
-import java.util.LinkedList;
-import java.util.List;
 import java.util.Locale;
 
 import life.knowledge4.videotrimmer.interfaces.OnTrimVideoListener;
@@ -54,7 +45,7 @@ public class TrimVideoUtils {
 
     private static final String TAG = TrimVideoUtils.class.getSimpleName();
 
-    public static void startTrim(@NonNull File src, @NonNull String dst, long startMs, long endMs, @NonNull OnTrimVideoListener callback) throws IOException {
+    public static void startTrim(Context context, @NonNull File src, @NonNull String dst, long startMs, long endMs, @NonNull OnTrimVideoListener callback) throws IOException {
         final String timeStamp = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(new Date());
         final String fileName = "MP4_" + timeStamp + ".mp4";
         final String filePath = dst + fileName;
@@ -62,112 +53,84 @@ public class TrimVideoUtils {
         File file = new File(filePath);
         file.getParentFile().mkdirs();
         Log.d(TAG, "Generated file path " + filePath);
-        genVideoUsingMp4Parser(src, file, startMs, endMs, callback);
+        genVideoUsingMp4Parser2(context, src, file, startMs, endMs, callback);
     }
 
-    private static void genVideoUsingMp4Parser(@NonNull File src, @NonNull File dst, long startMs, long endMs, @NonNull OnTrimVideoListener callback) throws IOException {
-        // NOTE: Switched to using FileDataSourceViaHeapImpl since it does not use memory mapping (VM).
-        // Otherwise we get OOM with large movie files.
-        Movie movie = MovieCreator.build(new FileDataSourceViaHeapImpl(src.getAbsolutePath()));
+    private static void genVideoUsingMp4Parser2(final Context context, @NonNull File src, @NonNull final File dst, long startMs, long endMs, @NonNull final OnTrimVideoListener callback) throws IOException {
+        String start = convertSecondsToTime(startMs / 1000);
+        String duration = convertSecondsToTime((endMs - startMs) / 1000);
 
-        List<Track> tracks = movie.getTracks();
-        movie.setTracks(new LinkedList<Track>());
-        // remove all tracks we will create new tracks from the old
-
-        double startTime1 = startMs / 1000;
-        double endTime1 = endMs / 1000;
-
-        boolean timeCorrected = false;
-
-        // Here we try to find a track that has sync samples. Since we can only start decoding
-        // at such a sample we SHOULD make sure that the start of the new fragment is exactly
-        // such a frame
-        for (Track track : tracks) {
-            if (track.getSyncSamples() != null && track.getSyncSamples().length > 0) {
-                if (timeCorrected) {
-                    // This exception here could be a false positive in case we have multiple tracks
-                    // with sync samples at exactly the same positions. E.g. a single movie containing
-                    // multiple qualities of the same video (Microsoft Smooth Streaming file)
-
-                    throw new RuntimeException("The startTime has already been corrected by another track with SyncSample. Not Supported.");
+        /* *
+         Cropped video ffmpeg instruction description:
+         * ffmpeg -ss START -t DURATION -i INPUT -c copy OUTPUT
+             -ss start time, such as: 00:00:20, starting from 20 seconds;
+             -t duration, such as: 00:00:10, indicates intercepting a 10-second video;
+             -i input, followed by a space, followed by the input video file;
+             -c copy indicate the encoding format of the video and audio to be used, where copy is designated as the original copy;
+             INPUT, input video file;
+             OUTPUT, output video file
+         */
+       // String cmd = "-ss " + start + " -t " + duration + " -i \"" + src.getAbsolutePath() + "\" -vcodec copy -acodec copy \"" + dst.getAbsolutePath()+"\"";
+        String[] command = new String[]{"-ss", start,
+                                        "-i",src.getAbsolutePath(),
+                                        "-t", duration,
+                                        /*"-vcodec", "copy",
+                                        "-acodec", "copy",*/
+                                        "-c", "copy",
+                                    dst.getAbsolutePath()};
+       try {
+            FFmpeg.getInstance(context).execute(command, new ExecuteBinaryResponseHandler() {
+                @Override public void onFailure(String s) {
+                    callback.onError(s);
                 }
-                startTime1 = correctTimeToSyncSample(track, startTime1, false);
-                endTime1 = correctTimeToSyncSample(track, endTime1, true);
-                timeCorrected = true;
-            }
-        }
 
-        for (Track track : tracks) {
-            long currentSample = 0;
-            double currentTime = 0;
-            double lastTime = -1;
-            long startSample1 = -1;
-            long endSample1 = -1;
-
-            for (int i = 0; i < track.getSampleDurations().length; i++) {
-                long delta = track.getSampleDurations()[i];
-
-
-                if (currentTime > lastTime && currentTime <= startTime1) {
-                    // current sample is still before the new starttime
-                    startSample1 = currentSample;
+                @Override public void onSuccess(String s) {
+                    callback.getResult(Uri.fromFile(dst));
                 }
-                if (currentTime > lastTime && currentTime <= endTime1) {
-                    // current sample is after the new start time and still before the new endtime
-                    endSample1 = currentSample;
+
+                @Override public void onStart() {
+                    callback.onTrimStarted();
                 }
-                lastTime = currentTime;
-                currentTime += (double) delta / (double) track.getTrackMetaData().getTimescale();
-                currentSample++;
-            }
-            movie.addTrack(new AppendTrack(new CroppedTrack(track, startSample1, endSample1)));
+
+                @Override public void onFinish() {
+                }
+            });
+        } catch (FFmpegCommandAlreadyRunningException e) {
+            e.printStackTrace();
         }
-
-        dst.getParentFile().mkdirs();
-
-        if (!dst.exists()) {
-            dst.createNewFile();
-        }
-
-        Container out = new DefaultMp4Builder().build(movie);
-
-        FileOutputStream fos = new FileOutputStream(dst);
-        FileChannel fc = fos.getChannel();
-        out.writeContainer(fc);
-
-        fc.close();
-        fos.close();
-        if (callback != null)
-            callback.getResult(Uri.parse(dst.toString()));
     }
 
-    private static double correctTimeToSyncSample(@NonNull Track track, double cutHere, boolean next) {
-        double[] timeOfSyncSamples = new double[track.getSyncSamples().length];
-        long currentSample = 0;
-        double currentTime = 0;
-        for (int i = 0; i < track.getSampleDurations().length; i++) {
-            long delta = track.getSampleDurations()[i];
-
-            if (Arrays.binarySearch(track.getSyncSamples(), currentSample + 1) >= 0) {
-                // samples always start with 1 but we start with zero therefore +1
-                timeOfSyncSamples[Arrays.binarySearch(track.getSyncSamples(), currentSample + 1)] = currentTime;
+    private static String convertSecondsToTime(long seconds) {
+        String timeStr = null;
+        int hour = 0;
+        int minute = 0;
+        int second = 0;
+        if (seconds <= 0)
+            return "00:00";
+        else {
+            minute = (int) seconds / 60;
+            if (minute < 60) {
+                second = (int) seconds % 60;
+                timeStr = "00:" + unitFormat(minute) + ":" + unitFormat(second);
+            } else {
+                hour = minute / 60;
+                if (hour > 99)
+                    return "99:59:59";
+                minute = minute %  60 ;
+                second = (int) (seconds - hour * 3600 - minute * 60);
+                timeStr = unitFormat(hour) + ":" + unitFormat(minute) + ":" + unitFormat(second);
             }
-            currentTime += (double) delta / (double) track.getTrackMetaData().getTimescale();
-            currentSample++;
+        }
+        return timeStr;
+    }
 
-        }
-        double previous = 0;
-        for (double timeOfSyncSample : timeOfSyncSamples) {
-            if (timeOfSyncSample > cutHere) {
-                if (next) {
-                    return timeOfSyncSample;
-                } else {
-                    return previous;
-                }
-            }
-            previous = timeOfSyncSample;
-        }
-        return timeOfSyncSamples[timeOfSyncSamples.length - 1];
+    private  static  String  unitFormat ( int  i ) {
+        String retStr =  null ;
+        if (i >= 0 && i < 10)
+            retStr = "0" + Integer.toString(i);
+        else
+            retStr = "" + i;
+        return retStr;
     }
 
     public static String stringForTime(int timeMs) {

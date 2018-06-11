@@ -71,7 +71,8 @@ public class TimeLineView extends View {
     protected void onSizeChanged(final int w, int h, final int oldW, int oldH) {
         super.onSizeChanged(w, h, oldW, oldH);
 
-        if (w != oldW) {
+        //mVideoUri Can be null if TimeLineView instance is created programmatically and not with xml.
+        if (w != oldW && mVideoUri!=null) {
             getBitmap(w);
         }
     }
